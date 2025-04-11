@@ -1,64 +1,62 @@
 // SPDX-License-Identifier: SEE LICENSE IN LICENSE
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.18;
 import {Script} from "forge-std/Script.sol";
 import {VRFCoordinatorV2_5Mock} from "@chainlink/contracts/v0.8/vrf/mocks/VRFCoordinatorV2_5Mock.sol";
-import {LinkToken} from "../test/mocks/LinkTokens.sol";
-contract HelperConfig is Script {
+import {LinkToken} from "test/mocks/LinkTokens.sol";
+abstract contract CodeConstraints {
+    uint256 constant SEPOLIA_CHAIN_ID = 11155111;
+    uint256 constant LOCAL_CHAIN_ID = 31337;
+    uint96 constant BASE_FEE = 0.25 ether;
+    uint96 constant GAS_PRICE = 1e9;
+    int256 constant WEI_PER_UNIT_LINK = 4e15;
+}
+
+contract HelperConfig is CodeConstraints, Script {
     struct NetworkConfig {
-        bytes32 keyHash;
-        uint256 subId;
+        address _vrfCoordinator;
+        uint256 entranceFee;
+        bytes32 keyhash;
+        uint256 subscriptionId;
         uint16 requestConfirmations;
         uint32 callbackGasLimit;
         uint32 numWords;
-        address vrfCoordinator;
-        uint256 entranceFee;
-        uint256 interval;
         address link;
     }
-    uint96 private constant BASE_FEE = 0.25 ether;
-    uint96 private constant GAS_PRICE = 1e9;
-    int256 private constant WEI_PER_UNIT_LINK = 4e15;
-    uint256 private constant SEPOLIA_CHAINID=11155111;
-    uint256 private constant LOCAL_CHAINID=31337;
-    NetworkConfig private localNetworkConfigs;
+    NetworkConfig private localNetworkConfig;
+    error HelperConfig__InvalidChain();
 
-    error HelperConfig__invalidChain();
-    
-
-    function getConfigByChainId(uint256 chainid) private returns (NetworkConfig memory)  {
-        if (chainid==SEPOLIA_CHAINID) {
+    function getConfigbyChainId(
+        uint256 blockChainId
+    ) private returns (NetworkConfig memory) {
+        if (blockChainId == SEPOLIA_CHAIN_ID) {
             return getSepoliaEthConfig();
-        }else if(chainid==LOCAL_CHAINID){
-            return createOrGetAnvilEthConfig();
-        }else{
-            revert HelperConfig__invalidChain();
+        } else if (blockChainId == LOCAL_CHAIN_ID) {
+            return getAnvilEthConfig();
+        } else {
+            revert HelperConfig__InvalidChain();
         }
     }
-    function getConfig() external returns (NetworkConfig memory){
-        return getConfigByChainId(block.chainid);
+    function getConfig() public returns( NetworkConfig memory) {
+        return getConfigbyChainId(block.chainid);
     }
 
     function getSepoliaEthConfig() public pure returns (NetworkConfig memory) {
         return
             NetworkConfig({
-                keyHash: 0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c,
-                subId: 0,
+                _vrfCoordinator: 0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B,
+                entranceFee: 0.01 ether,
+                keyhash: 0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae,
+                subscriptionId: 0,
                 requestConfirmations: 3,
-                callbackGasLimit: 2500000,
+                callbackGasLimit: 100000,
                 numWords: 1,
-                vrfCoordinator: 0x271682DEB8C4E0901D1a1550aD2e64D568E69909,
-                 entranceFee:0.025 ether,
-                 interval:100,
-                 link:0x779877A7B0D9E8603169DdbD7836e478b4624789
+                link:0x779877A7B0D9E8603169DdbD7836e478b4624789
             });
     }
 
-    function createOrGetAnvilEthConfig()
-        public
-        returns (NetworkConfig memory)
-    {
-        if (localNetworkConfigs.vrfCoordinator != address(0)) {
-            return localNetworkConfigs;
+    function getAnvilEthConfig() public returns (NetworkConfig memory) {
+        if (localNetworkConfig._vrfCoordinator != address(0)) {
+            return localNetworkConfig;
         }
         vm.startBroadcast();
         VRFCoordinatorV2_5Mock mock = new VRFCoordinatorV2_5Mock(
@@ -68,17 +66,17 @@ contract HelperConfig is Script {
         );
         LinkToken linkToken=new LinkToken();
         vm.stopBroadcast();
-        localNetworkConfigs = NetworkConfig({
-            keyHash: 0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c,
-            subId: 0,
+
+        localNetworkConfig = NetworkConfig({
+            _vrfCoordinator: address(mock),
+            entranceFee: 0.01 ether,
+            keyhash: 0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae,
+            subscriptionId: 0,
             requestConfirmations: 3,
-            callbackGasLimit: 2500000,
+            callbackGasLimit: 100000,
             numWords: 1,
-            vrfCoordinator: address(mock),
-            entranceFee:0.025 ether,
-            interval:100,
             link:address(linkToken)
         });
-        return localNetworkConfigs;
+        return localNetworkConfig;
     }
 }

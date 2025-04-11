@@ -2,117 +2,119 @@
 pragma solidity ^0.8.18;
 import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
 import {VRFV2PlusClient} from "@chainlink/contracts/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
+import {console} from "forge-std/Test.sol";
 
 contract Raffle is VRFConsumerBaseV2Plus {
     uint256 private immutable i_entranceFee;
-    uint256 private immutable i_interval;
-    bytes32 private immutable i_keyHash;
-    uint256 private immutable i_subId;
+    bytes32 private immutable i_keyhash;
+    uint256 private immutable i_subscriptionId;
     uint16 private immutable i_requestConfirmations;
     uint32 private immutable i_callbackGasLimit;
     uint32 private immutable i_numWords;
-
-    address private vrfCoordinator;
-    uint256 private s_lastTimeStamp;
+    uint256 private immutable interval = 60;
+    uint256 private lastTimeStamp;
+    address s_raffleWinner;
+    address private immutable vrfCoordinator;
     address[] private s_players;
-    RaffleState public raffleState;
-    error Raffle__InsufficientFundsForEntranceFee();
-    error Raffle__UpKeepNeededIsNotTrue();
-    error Raffle__WinnerPaymentUnsuccesful();
-    error Raffle__RaffleNotOpen();
-    event RaffleEntered(address indexed player);
-    event WinnerSelected(address indexed player);
+    RaffleState raffleState;
     enum RaffleState {
         OPEN,
         CALCULATING
     }
+    error Raffle__InsufficientFunds();
+    error Raffle__RaffleWinnerPaymentUnsuccessful();
+    error Raffle__UpkeepNotNeeded();
+    event PlayerEntered(address indexed player);
+    event WinnerSelected(address indexed winner);
+    event RequestedRaffleWinnerIndex(uint256 indexed winnerIndex);
 
     constructor(
-        bytes32 keyHash,
-        uint256 subId,
+        address _vrfCoordinator,
+        uint256 entranceFee,
+        bytes32 keyhash,
+        uint256 subscriptionId,
         uint16 requestConfirmations,
         uint32 callbackGasLimit,
-        uint32 numWords,
-        address s_vrfCoordinator,
-        uint256 entranceFee,
-        uint256 interval
-    ) VRFConsumerBaseV2Plus(s_vrfCoordinator) {
-        s_lastTimeStamp = block.timestamp;
-        i_keyHash = keyHash;
-        i_subId = subId;
+        uint32 numWords
+    ) VRFConsumerBaseV2Plus(_vrfCoordinator) {
+        i_entranceFee = entranceFee;
+        i_keyhash = keyhash;
+        i_subscriptionId = subscriptionId;
         i_requestConfirmations = requestConfirmations;
         i_callbackGasLimit = callbackGasLimit;
         i_numWords = numWords;
-        vrfCoordinator = s_vrfCoordinator;
-        i_entranceFee = entranceFee;
-        i_interval=interval;
+        vrfCoordinator = _vrfCoordinator;
+        lastTimeStamp = block.timestamp;
         raffleState = RaffleState.OPEN;
     }
 
     function enterRaffle() external payable {
-        if (msg.value < i_entranceFee) {
-            revert Raffle__InsufficientFundsForEntranceFee();
+        if (msg.value <= i_entranceFee) {
+            revert Raffle__InsufficientFunds();
         }
-        if (raffleState != RaffleState.OPEN) {
-            revert Raffle__RaffleNotOpen();
-        }
-        emit RaffleEntered(msg.sender);
         s_players.push(msg.sender);
+        emit PlayerEntered(msg.sender);
     }
 
     function checkUpkeep(
         bytes memory /* checkData */
     ) public view returns (bool upkeepNeeded, bytes memory /* performData */) {
-        bool timeInterval = block.timestamp - s_lastTimeStamp >=i_interval;
-        bool balance = address(this).balance >= i_entranceFee;
+        bool correctTime = (block.timestamp - lastTimeStamp) > interval;
         bool RaffleOpen = raffleState == RaffleState.OPEN;
-        bool player = s_players.length > 0;
-        upkeepNeeded = timeInterval && balance && RaffleOpen && player;
+        bool contractBalance = address(this).balance > i_entranceFee;
+        bool players = s_players.length > 0;
+        upkeepNeeded = correctTime && RaffleOpen && contractBalance && players;
         return (upkeepNeeded, "");
+        // We don't use the checkData in this example. The checkData is defined when the Upkeep was registered.
     }
 
     function performUpkeep(bytes calldata /* performData */) external {
         (bool upKeepNeeded, ) = checkUpkeep("");
         if (!upKeepNeeded) {
-            revert Raffle__UpKeepNeededIsNotTrue();
+            revert Raffle__UpkeepNotNeeded();
         }
+
         raffleState = RaffleState.CALCULATING;
-        VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient
-            .RandomWordsRequest({
-                keyHash: i_keyHash,
-                subId: i_subId,
+
+        uint256 requestId = s_vrfCoordinator.requestRandomWords(
+            VRFV2PlusClient.RandomWordsRequest({
+                keyHash: i_keyhash,
+                subId: i_subscriptionId,
                 requestConfirmations: i_requestConfirmations,
                 callbackGasLimit: i_callbackGasLimit,
                 numWords: i_numWords,
                 extraArgs: VRFV2PlusClient._argsToBytes(
                     VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
                 )
-            });
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+            })
+        );
+        emit RequestedRaffleWinnerIndex(requestId);
     }
 
     function fulfillRandomWords(
-        uint256 requestId,
-        uint256[] calldata randomWords
+        /* requestId*/ uint256,
+        uint256[] calldata _randomWords
     ) internal override {
-        uint256 winnerIndex = randomWords[0] % s_players.length;
-        address winner = s_players[winnerIndex];
+        uint256 winnerIndex = _randomWords[0] % s_players.length;
+        address RaffleWinner = s_players[winnerIndex];
+        s_raffleWinner = RaffleWinner;
+        emit WinnerSelected(s_raffleWinner);
         s_players = new address[](0);
-        emit WinnerSelected(winner);
+        lastTimeStamp = block.timestamp;
         raffleState = RaffleState.OPEN;
-        (bool success, ) = payable(winner).call{value: address(this).balance}(
-            ""
-        );
+        (bool success, ) = payable(s_raffleWinner).call{
+            value: address(this).balance
+        }("");
         if (!success) {
-            revert Raffle__WinnerPaymentUnsuccesful();
+            revert Raffle__RaffleWinnerPaymentUnsuccessful();
         }
     }
 
-    function getPlayer(uint256 index) external view returns (address) {
+    function getPlayerArray(uint256 index) external view returns (address) {
         return s_players[index];
     }
 
-    function setRaffleState() external {
-        raffleState = RaffleState.CALCULATING;
+    function getWinner() external returns (address) {
+        return s_raffleWinner;
     }
 }
